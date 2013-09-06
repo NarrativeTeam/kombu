@@ -114,7 +114,7 @@ class Producer(object):
                 mandatory=False, immediate=False, priority=0,
                 content_type=None, content_encoding=None, serializer=None,
                 headers=None, compression=None, exchange=None, retry=False,
-                retry_policy=None, declare=[], **properties):
+                retry_policy=None, declare=[], message_id=None, **properties):
         """Publish message to the specified exchange.
 
         :param body: Message body.
@@ -134,6 +134,13 @@ class Producer(object):
         :keyword declare: Optional list of required entities that must
             have been declared before publishing the message.  The entities
             will be declared using :func:`~kombu.common.maybe_declare`.
+        :keyword message_id: Message id is an optional property which uniquely
+            identifies a message within the message system. The message
+            producer is usually responsible for setting the message id in
+            such a way that it is assured to be globally unique. A broker
+            may discard a message as a duplicate if the value of the message
+            id matches that of a previously received message sent to the
+            same node.
         :keyword retry: Retry publishing, or declaring entities if the
             connection is lost.
         :keyword retry_policy: Retry configuration, this is the keywords
@@ -159,6 +166,9 @@ class Producer(object):
         body, content_type, content_encoding = self._prepare(
             body, serializer, content_type, content_encoding,
             compression, headers)
+
+        if message_id is not None:
+            properties["message_id"] = message_id
 
         publish = self._publish
         if retry:

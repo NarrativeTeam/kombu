@@ -153,6 +153,19 @@ class test_Producer(TestCase):
         p._publish('hello', 0, '', '', {}, {}, 'rk', 0, 0, ex, declare=[ex])
         p.maybe_declare.assert_called_with(ex)
 
+    def test_publish_with_message_id(self):
+        channel = self.connection.channel()
+        p = self.connection.Producer(channel)
+        m = p.publish('hello', message_id="foobar")[0]
+        props = m['properties']
+        self.assertDictContainsSubset({'message_id': 'foobar'}, props)
+
+    def test_publish_without_message_id(self):
+        channel = self.connection.channel()
+        p = self.connection.Producer(channel)
+        m = p.publish('hello')[0]
+        self.assertNotIn('message_id', m['properties'])
+
     def test_revive_when_channel_is_connection(self):
         p = self.connection.Producer()
         p.exchange = Mock()
