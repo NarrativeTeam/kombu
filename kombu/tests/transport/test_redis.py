@@ -67,6 +67,9 @@ class Client(object):
     def hdel(self, key, k):
         self.hashes[key].pop(k, None)
 
+    def hexists(self, key, k):
+        return k in self.hashes[key]
+
     def sadd(self, key, member, *args):
         self.sets[key].add(member)
     zadd = sadd

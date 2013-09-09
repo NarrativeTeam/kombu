@@ -56,6 +56,7 @@ DEFAULT_DB = 0
 
 PRIORITY_STEPS = [0, 3, 6, 9]
 
+
 # This implementation may seem overly complex, but I assure you there is
 # a good reason for doing it this way.
 #
@@ -308,6 +309,10 @@ class MultiChannelPoller(object):
         return self._fd_to_chan
 
 
+def _get_message_id(message):
+    return message['properties'].get('message_id', None)
+
+
 class Channel(virtual.Channel):
     QoS = QoS
 
@@ -329,6 +334,8 @@ class Channel(virtual.Channel):
     priority_steps = PRIORITY_STEPS
     socket_timeout = None
     max_connections = 10
+    discard_duplicates = True  # FIXME sp: default false
+    queued_messages_key = 'queued_messages'
     _pool = None
 
     from_transport_options = (
@@ -342,6 +349,8 @@ class Channel(virtual.Channel):
          'unacked_restore_limit',
          'socket_timeout',
          'max_connections',
+         'discard_duplicates',
+         'queued_messages_key',
          'priority_steps')  # <-- do not add comma here!
     )
 
@@ -490,7 +499,9 @@ class Channel(virtual.Channel):
                 dest, item = dest__item
                 dest = bytes_to_str(dest).rsplit(self.sep, 1)[0]
                 self._rotate_cycle(dest)
-                return loads(bytes_to_str(item)), dest
+                message = loads(bytes_to_str(item))
+                self._stop_discarding(message, self.client)
+                return message, dest
             else:
                 raise Empty()
         finally:
@@ -507,8 +518,16 @@ class Channel(virtual.Channel):
             for pri in PRIORITY_STEPS:
                 item = client.rpop(self._q_for_pri(queue, pri))
                 if item:
-                    return loads(item)
+                    message = loads(item)
+                    self._stop_discarding(message, client)
+                    return message
             raise Empty()
+
+    def _stop_discarding(self, message, client):
+        if self.discard_duplicates:
+            message_id = _get_message_id(message)
+            if message_id is not None:
+                client.hdel(self.queued_messages_key, message_id)
 
     def _size(self, queue):
         with self.conn_or_acquire() as client:
@@ -533,8 +552,20 @@ class Channel(virtual.Channel):
                 message['properties']['delivery_info']['priority']), 9), 0)
         except (TypeError, ValueError, KeyError):
             pri = 0
+
+        message_id = _get_message_id(message)
+        check_if_queued = self.discard_duplicates and message_id is not None
+        print "check_queued?", check_if_queued
+
         with self.conn_or_acquire() as client:
-            client.lpush(self._q_for_pri(queue, pri), dumps(message))
+            if check_if_queued:
+                if not client.hexists(self.queued_messages_key, message_id):
+                    cmds = client.pipeline()
+                    cmds.lpush(self._q_for_pri(queue, pri), dumps(message))
+                    cmds.hset(self.queued_messages_key, message_id, 1)
+                    cmds.execute()
+            else:
+                client.lpush(self._q_for_pri(queue, pri), dumps(message))
 
     def _put_fanout(self, exchange, message, **kwargs):
         """Deliver fanout message."""
