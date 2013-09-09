@@ -334,7 +334,7 @@ class Channel(virtual.Channel):
     priority_steps = PRIORITY_STEPS
     socket_timeout = None
     max_connections = 10
-    discard_duplicates = True  # FIXME sp: default false
+    deduplication = True  # FIXME sp: default false
     queued_messages_key = 'queued_messages'
     _pool = None
 
@@ -349,7 +349,7 @@ class Channel(virtual.Channel):
          'unacked_restore_limit',
          'socket_timeout',
          'max_connections',
-         'discard_duplicates',
+         'deduplication',
          'queued_messages_key',
          'priority_steps')  # <-- do not add comma here!
     )
@@ -524,7 +524,7 @@ class Channel(virtual.Channel):
             raise Empty()
 
     def _stop_discarding(self, message, client):
-        if self.discard_duplicates:
+        if self.deduplication:
             message_id = _get_message_id(message)
             if message_id is not None:
                 client.hdel(self.queued_messages_key, message_id)
@@ -554,7 +554,7 @@ class Channel(virtual.Channel):
             pri = 0
 
         message_id = _get_message_id(message)
-        check_if_queued = self.discard_duplicates and message_id is not None
+        check_if_queued = self.deduplication and message_id is not None
         print "check_queued?", check_if_queued
 
         with self.conn_or_acquire() as client:
