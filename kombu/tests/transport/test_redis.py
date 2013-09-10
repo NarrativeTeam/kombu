@@ -70,6 +70,17 @@ class Client(object):
     def hexists(self, key, k):
         return k in self.hashes[key]
 
+    def rpoplpush(self, source, destination):
+        if source not in self.queues:
+            self.queues[source] = _Queue()
+        if destination not in self.queues:
+            self.queues[destination] = _Queue()
+
+        v = self.rpop(source)
+        if v is not None:
+            self.lpush(destination, v)
+            return v
+
     def sadd(self, key, member, *args):
         self.sets[key].add(member)
     zadd = sadd
