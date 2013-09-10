@@ -313,6 +313,10 @@ def _get_message_id(message):
     return message['properties'].get('message_id', None)
 
 
+def _get_routing_key(message):
+    return message['properties']['delivery_info']['routing_key']
+
+
 class Channel(virtual.Channel):
     QoS = QoS
 
@@ -335,7 +339,8 @@ class Channel(virtual.Channel):
     socket_timeout = None
     max_connections = 10
     deduplication = True  # FIXME sp: default false
-    queued_messages_key = 'queued_messages'
+    queued_message_ids_key = '_kombu.queued_message_ids'
+    pending_undiscard_key = '_kombu.pending_undiscard'
     _pool = None
 
     from_transport_options = (
@@ -350,7 +355,7 @@ class Channel(virtual.Channel):
          'socket_timeout',
          'max_connections',
          'deduplication',
-         'queued_messages_key',
+         'queued_message_ids_key',
          'priority_steps')  # <-- do not add comma here!
     )
 
@@ -479,9 +484,29 @@ class Channel(virtual.Channel):
         queues = self._consume_cycle()
         if not queues:
             return
-        keys = [self._q_for_pri(queue, pri) for pri in PRIORITY_STEPS
-                for queue in queues] + [timeout or 0]
+        prio_queues = [self._q_for_pri(queue, pri) for pri in PRIORITY_STEPS
+                       for queue in queues]
+        timeout = timeout or 0
         self._in_poll = True
+        if self.deduplication:
+            cmds = self.client.pipeline()
+            for queue in prio_queues:
+                cmds.rpoplpush(queue, self.pending_undiscard_key)
+
+            message_ids = [
+                mid for mid in (
+                    _get_message_id(m) for m in (
+                        loads(bytes_to_str(i)) for i in cmds.execute()
+                        if i is not None)
+                    if m is not None)
+                if mid is not None
+            ]
+
+            if message_ids:
+                self.client.hdel(self.queued_message_ids_key, *message_ids)
+            keys = [self.pending_undiscard_key, timeout]
+        else:
+            keys = prio_queues + [timeout]
         self.client.connection.send_command('BRPOP', *keys)
 
     def _brpop_read(self, **options):
@@ -497,10 +522,12 @@ class Channel(virtual.Channel):
                 raise Empty()
             if dest__item:
                 dest, item = dest__item
-                dest = bytes_to_str(dest).rsplit(self.sep, 1)[0]
-                self._rotate_cycle(dest)
                 message = loads(bytes_to_str(item))
-                self._stop_discarding(message, self.client)
+                if self.deduplication:
+                    dest = _get_routing_key(message)
+                else:
+                    dest = bytes_to_str(dest).rsplit(self.sep, 1)[0]
+                self._rotate_cycle(dest)
                 return message, dest
             else:
                 raise Empty()
@@ -516,18 +543,24 @@ class Channel(virtual.Channel):
     def _get(self, queue):
         with self.conn_or_acquire() as client:
             for pri in PRIORITY_STEPS:
-                item = client.rpop(self._q_for_pri(queue, pri))
-                if item:
-                    message = loads(item)
-                    self._stop_discarding(message, client)
-                    return message
-            raise Empty()
+                if self.deduplication:
+                    pending_item = client.rpoplpush(
+                        self._q_for_pri(queue, pri),
+                        self.pending_undiscard_key)
+                    if pending_item is None:
+                        continue
+                    message = loads(bytes_to_str(pending_item))
+                    message_id = _get_message_id(message)
+                    if message_id is not None:
+                        client.hdel(self.queued_message_ids_key, message_id)
 
-    def _stop_discarding(self, message, client):
-        if self.deduplication:
-            message_id = _get_message_id(message)
-            if message_id is not None:
-                client.hdel(self.queued_messages_key, message_id)
+                    item = client.rpop(self.pending_undiscard_key)
+                else:
+                    item = client.rpop(self._q_for_pri(queue, pri))
+
+                if item:
+                    return loads(bytes_to_str(item))
+            raise Empty()
 
     def _size(self, queue):
         with self.conn_or_acquire() as client:
@@ -555,14 +588,13 @@ class Channel(virtual.Channel):
 
         message_id = _get_message_id(message)
         check_if_queued = self.deduplication and message_id is not None
-        print "check_queued?", check_if_queued
 
         with self.conn_or_acquire() as client:
             if check_if_queued:
-                if not client.hexists(self.queued_messages_key, message_id):
+                if not client.hexists(self.queued_message_ids_key, message_id):
                     cmds = client.pipeline()
                     cmds.lpush(self._q_for_pri(queue, pri), dumps(message))
-                    cmds.hset(self.queued_messages_key, message_id, 1)
+                    cmds.hset(self.queued_message_ids_key, message_id, 1)
                     cmds.execute()
             else:
                 client.lpush(self._q_for_pri(queue, pri), dumps(message))
