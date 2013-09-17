@@ -50,6 +50,7 @@ TRANSPORT_ALIASES = {
     'librabbitmq': 'kombu.transport.librabbitmq:Transport',
     'memory': 'kombu.transport.memory:Transport',
     'redis': 'kombu.transport.redis:Transport',
+    'futuredis': 'kombu.transport.futuredis:Transport',
     'SQS': 'kombu.transport.SQS:Transport',
     'sqs': 'kombu.transport.SQS:Transport',
     'beanstalk': 'kombu.transport.beanstalk:Transport',
